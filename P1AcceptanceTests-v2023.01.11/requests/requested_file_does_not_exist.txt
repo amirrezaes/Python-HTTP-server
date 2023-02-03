@@ -1,0 +1,3 @@
+GET /dne.txt HTTP/1.0
+Connection: close
+

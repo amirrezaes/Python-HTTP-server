@@ -1,0 +1,2 @@
+GET /small.html HTTP/1.0
+
