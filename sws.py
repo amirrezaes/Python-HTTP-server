@@ -14,24 +14,31 @@ import re
 import os.path
 
 #constants
-PATTERN = re.compile(r"(GET )+(/\S*)+( HTTP/1.0)\s+([\S,\s]*)+(\s{2})")
+PATTERN = re.compile(r"(GET )+(/\S*)+( HTTP/1.0)\s+(\S*: *\S*)+(\s{2})")
+PATTERN_HEADERLESS = re.compile(r"(GET )+(/\S*)+( HTTP/1.0)+\s{2}")
 RESPONSE_CODE = 0
 RESPONSE_MESSAGE = 1
 DIRECTORY = 2
+HEADER = 4
 
+
+def handle_header():
+    pass
 
 def generate_response(message: str) -> tuple:
-    if matched:=PATTERN.fullmatch(message):
-        directory: str = matched[2].lstrip("/") # second group is the directory
-
-        print("directory being accessed: ", directory)
-        if os.path.isfile(directory):
-            return (200 ,"HTTP/1.0 200 OK\r\n", directory)
+    matched =PATTERN.fullmatch(message) or PATTERN_HEADERLESS.fullmatch(message)
+    if matched:
+        if len(matched.groups()) > 3: # means there was a header
+            header: str = matched[HEADER]
         else:
-            return (404,"HTTP/1.0 404 Not Found\r\n", "")
+            header = ""
+        directory: str = matched[DIRECTORY].lstrip("/") # second group is the directory
+        if os.path.isfile(directory):
+            return (200 ,"HTTP/1.0 200 OK\r\n", directory, header)
+        else:
+            return (404,"HTTP/1.0 404 Not Found\r\n", "", header)
     else:
-        print(message)
-        return (400 ,"HTTP/1.0 400 Bad Request\r\n", "")
+        return (400 ,"HTTP/1.0 400 Bad Request\r\n", "", "")
 
 
 def handle_directory(client: socket.socket, directory: str) -> None:
@@ -39,20 +46,24 @@ def handle_directory(client: socket.socket, directory: str) -> None:
         client.send(f.read())
 
 
-def client_handle(client: socket.socket):
+def client_handle(client: socket.socket, header: str):
+    if "keep-alive" in header.lower():
+        return
     inputs.remove(client)
     outputs.remove(client)
     client.close()
 
 
-def handle_response(client: socket.socket, response_code: int, response_message:str, directory: str) -> None:
-    client.send(response_message.encode()) # https response will be sent in all cases
+def handle_response(client: socket.socket, response_code: int, response_message:str, directory: str, header: str) -> None:
+    message = (response_message + header + "\r\n" + (header and "\r\n")).encode()
+    print("message being sent: ", message)
+    client.send(message) # https response will be sent in all cases
     if response_code == 200:
         if directory == "/":
             pass
         else:
             handle_directory(client, directory)
-    client_handle(client)
+    client_handle(client, header)
 
 server_ip = sys.argv[1]
 serverPort = int(sys.argv[2])
@@ -79,6 +90,8 @@ message_queues = {}
 
 # request message
 request_message = {}
+
+
 
 timeout = 30
 
@@ -117,7 +130,8 @@ while inputs:
                 print("Recived data from", s.getpeername())
                 # if not add the message to the request message for s
                 request_message[s] =  request_message[s] + message1
-                message = request_message[s]
+                message: str = request_message[s]
+                print("data start: ", message.encode(), "data end")
                 # check if the end of the requests:
                 if not message.endswith('\n\n'):
                     continue
@@ -146,7 +160,6 @@ while inputs:
                     del request_message[s]
             else:
                 #print logs and send messages
-                print(next_msg)
                 #print_log(s,message_request,printresponse)
                 handle_response(s, *next_msg)
                 
