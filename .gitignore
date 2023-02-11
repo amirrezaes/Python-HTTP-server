@@ -5,3 +5,4 @@ sws-persistent.cap
 sws-non-persistent.cap
 P1AcceptanceTests-v2023.01.11/manual_tests/multiple_requests_2.txt
 P1AcceptanceTests-v2023.01.11/manual_tests/multiple_requests_2.txt
+client.py

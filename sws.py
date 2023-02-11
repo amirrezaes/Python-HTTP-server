@@ -13,11 +13,10 @@ import re
 import os.path
 import logging
 
-
 logging.basicConfig(level=logging.INFO,format='%(asctime)s: %(message)s', datefmt='%a %b %d %H:%M:%S %Z %Y')
 #constants
-PATTERN = re.compile(r"(GET )+(/\S*)+( HTTP/1.0)\s+(\S*: *\S*)+(\s{2,})")
-PATTERN_HEADERLESS = re.compile(r"(GET )+(/\S*)+( HTTP/1.0)+\s{2,}")
+PATTERN = re.compile(r"(GET )+(/\S*)+( HTTP/(1.0|1.1))\s+(\S*: *\S*)+(\s{2,})")
+PATTERN_HEADERLESS = re.compile(r"(GET )+(/\S*)+( HTTP/(1.0|1.1))+\s{2,}")
 PATTERN_SPLIT = re.compile(r"\s\s")
 RESPONSE_CODE = 0
 RESPONSE_MESSAGE = 1
@@ -53,7 +52,24 @@ def generate_response(message: str) -> tuple:
 
 def handle_directory(client: socket.socket, directory: str) -> None:
     with open(directory, 'rb') as f:
-        client.sendall(f.read())
+        content = f.read()
+        length = len(content)
+    while length:
+        try:
+            client.sendall(content)
+            length = 0
+        except BlockingIOError:
+            try:
+                sent_size = client.send(content)
+                length -= sent_size
+                content = content[sent_size:]
+            except BlockingIOError:
+                pass
+        except:
+            return
+        finally:
+            if not client:
+                return
 
 
 def client_handle(client: socket.socket, header: str, response_code: int) -> None:
@@ -193,4 +209,6 @@ while inputs:
                 inputs.remove(i)
                 if i in outputs:
                     outputs.remove(i)
+                if i in message_queues:
+                    message_queues.pop(i)
                 i.close()
