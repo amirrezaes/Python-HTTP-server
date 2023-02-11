@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # encoding: utf-8
 #
-# Copyright (c) 2029 Zhiming Huang
+# Copyright (c) 2029 Zhiming Huang, Amirreza Esmaeili
 #
 
 
