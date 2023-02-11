@@ -1,3 +1,0 @@
-*ASDFJKL
-Connection: keep-alive
-
