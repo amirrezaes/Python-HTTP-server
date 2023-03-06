@@ -33,8 +33,8 @@ MAX_PAYLOAD_SIZE = 1024
 
 ECHO_SERVER = ("165.232.76.174", 8888)
 
-Sent = []
-Recieved = {}
+Sent: List[Timer] = []
+Recieved = set()
 
 server_ip = sys.argv[1]
 serverPort = int(sys.argv[2])
@@ -55,31 +55,62 @@ timeout = 30
 
 class Tools:
     PATTERN = re.compile(r"(SYN|DAT|FIN|ACK|RST)\n(([a-zA-Z]+: [-1|\d]+\n)*)\n")
+    PATTERN_BYTE = re.compile(r"(SYN|DAT|FIN|ACK|RST)\n(([a-zA-Z]+: [-1|\d]+\n)*)\n".encode(), re.MULTILINE)
 
     def send(message: bytes, log: tuple):
         udp_sock.sendto(message, ECHO_SERVER)
         logging.info("Send; {}; {}; {}".format(*log))
-        Sent.append((message, Timer))
+        Sent.append(Timer(0.8, Tools.timeout, (message, log)))
+        Sent[-1].daemon = True
+        Sent[-1].start()
 
     def good_packet(packet: bytes):
-        packet = packet.decode()
-        empty_pos = packet.find("\n\n")
-        return "\n\n" != -1 and Tools.PATTERN.fullmatch(packet[:empty_pos+2])
+        empty_pos = packet.find(b"\n\n")
+        if empty_pos != -1:
+            packet = packet[:empty_pos+2].decode()
+            return Tools.PATTERN.fullmatch(packet)
     
     def recv():
-        temp = udp_sock.recv(2048)
+        temp = udp_sock.recv(MAX_PAYLOAD_SIZE * 4) # extra 1024 byte just in case
         if Tools.good_packet(temp):
-            command, headers, payload = Tools.packet_splitter(temp)
+            if 0 and temp.count(DAT.encode()) > 1: #TODO: to be written
+                print("multi data")
+                packets = Tools.handle_pipe(temp)
+                for p in packets:
+                    command, headers, payload = p
+                    logging.info("Receive; {}; {}; {}".format(command.strip(), *headers))
+                    return (DAT, packets)
+
+
+            else:
+                Recieved.add(temp)
+                command, headers, payload = Tools.packet_splitter(temp)
+
         else:
             return ""
         logging.info("Receive; {}; {}; {}".format(command.strip(), *headers))
         return (command, headers, payload)
 
+    def handle_pipe(message):
+        results = []
+        #clean_match = re.findall(Tools.PATTERN_BYTE, message, re.MULTILINE)
+        #clean_match = [[i[0].decode(), i[1].decode()] for i in clean_match]
+        matches = re.finditer(Tools.PATTERN_BYTE, message)
+        last = 0
+        for i, match in enumerate(matches):
+            payload = message[last:match.start()]
+            last = match.end()
+            Recieved.add(match.group()+payload)
+            results.append(match.group()+payload)
+        return [Tools.packet_splitter(i) for i in results]
+            
+
     def packet_splitter(packet: bytes):
-        packet_enc = packet.decode()
+        empty_pos = packet.find(b"\n\n")
+        packet_enc = packet[:empty_pos+2].decode()
         splited_packet = packet_enc.split("\n")
         command = splited_packet[0]
-        headers = packet_enc[packet_enc.find("\n")+1:packet_enc.find("\n\n")].split("\n")
+        headers = splited_packet[1:]
         payload = packet[packet.find(b"\n\n")+2:]
         return (command+"\n", [i for i in headers if i !=""], payload) # "\n" is for compatibility with Constants
     
@@ -91,7 +122,10 @@ class Tools:
         results = {}
         for h in headers:
             h = [i.strip().casefold() for i in h.split(":")]
-            results[h[0]] = int(h[1])
+            try:
+                results[h[0]] = int(h[1])
+            except:
+                print(h)
         return results
     
     def file_read_split(name) -> dict:
@@ -109,8 +143,10 @@ class Tools:
                 jobs.get_nowait()() # run the job
             except queue.Empty:
                 break
-    def timeout(t):
-        return time() - t >= 2
+
+    def timeout(message, log):
+        if message not in Recieved:
+            Tools.send(message, log)
 
 
 
@@ -150,23 +186,22 @@ class Sender:
 
     def send_data(self):
         if self.sequence != self.acked:
-            print("packet lost\r")
-            if Tools.timeout(self.on_air[self.acked]):
-                self.sequence = self.acked
+            # if Tools.timeout(self.on_air[self.acked]):
+            #    self.sequence = self.acked
+            # else:
+            return
+        for _ in range(1): #TODO: fix this to send 3
+            chunk = self.file.get(self.sequence)
+            if chunk:
+                h1 = f"Sequence: {self.sequence}"
+                h2 = f"Length: {len(chunk)}"
+                packet = PACKET.format(comm=DAT, h1=h1, h2=h2).encode()
+                packet += chunk
+                Tools.send(packet, ("DAT", h1, h2))
+                self.on_air[self.sequence] = time()
+                self.sequence += len(chunk)
             else:
-                return
-
-        chunk = self.file.get(self.sequence)
-        if chunk:
-            h1 = f"Sequence: {self.sequence}"
-            h2 = f"Length: {len(chunk)}"
-            packet = PACKET.format(comm=DAT, h1=h1, h2=h2).encode()
-            packet += chunk
-            Tools.send(packet, ("DAT", h1, h2))
-            self.on_air[self.sequence] = time()
-            self.sequence += len(chunk)
-        else:
-            self.send_fin()
+                self.send_fin()
 
 
     def send_fin(self):
@@ -195,7 +230,7 @@ class Reciver:
         self.window = 2048
     
     def send_ack(self):
-        self.ack_number += 1
+        self.ack_number += (not (self.state == OPEN))
         h1 = f"Acknowledgment: {self.ack_number}"
         h2 = f"Window: {self.window}"
         packet = PACKET.format(comm=ACK, h1=h1, h2=h2).encode()
@@ -207,9 +242,12 @@ class Reciver:
         if headers["sequence"] != self.ack_number:
             self.send_ack()
             return
-        self.rcv_buff[headers["sequence"]] = message[PAYLOAD]
-        self.ack_number += headers["length"] - 1 # send_ack will add 1 
-        self.send_ack()
+        #if headers["sequence"] in self.rcv_buff:
+        #    return
+        else:
+            self.rcv_buff[headers["sequence"]] = message[PAYLOAD]
+            self.ack_number += headers["length"] # send_ack will add 1 
+            #self.send_ack()
 
     def write_file(self):
         # TODO: wait for a while before closing
@@ -230,7 +268,6 @@ class Reciver:
     
 
 file_chunks = Tools.file_read_split(file_read)
-print(file_chunks.keys())
 rdp_receiver = Reciver(udp_sock)
 rdp_sender = Sender(udp_sock, file_chunks)
 
@@ -243,6 +280,7 @@ while True:
         #print("raw_message:", message)
         #if the message in rcv_buf is complete (detect a new line):
         if not message:
+            print("bad")
             jobs.put(Tools.send_rst)
         else:
             #extract the message from rcv_buf, and split the message into RDP packets
@@ -251,7 +289,13 @@ while True:
             elif message[COMMAND] == SYN:
                 jobs.put(rdp_receiver.send_ack)
             elif message[COMMAND] == DAT:
-                rdp_receiver.rcv_data(message)
+                if len(message) == 2:
+                    for packet in message[1]:
+                        rdp_receiver.rcv_data(packet)
+                        jobs.put(rdp_receiver.send_ack)
+                else:
+                    rdp_receiver.rcv_data(message)
+                    jobs.put(rdp_receiver.send_ack)
             elif message[COMMAND] == RST:
                 rdp_receiver.reset()
                 rdp_sender.reset()
@@ -265,8 +309,6 @@ while True:
         Tools.get_next_job()
         if rdp_receiver.state == OPEN and rdp_sender.state == OPEN:
             rdp_sender.send_data()
-    else:
-        print("still running")
 
     if udp_sock not in readable and udp_sock not in writable:
         if rdp_sender.getstate() == CLOSED and rdp_receiver.getstate() == CLOSED:
