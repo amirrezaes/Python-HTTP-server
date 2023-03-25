@@ -57,12 +57,13 @@ class Tools:
     PATTERN = re.compile(r"(SYN|DAT|FIN|ACK|RST)\n(([a-zA-Z]+: [-1|\d]+\n)*)\n")
     PATTERN_BYTE = re.compile(r"(SYN|DAT|FIN|ACK|RST)\n(([a-zA-Z]+: [-1|\d]+\n)*)\n".encode(), re.MULTILINE)
 
-    def send(message: bytes, log: tuple):
+    def send(message: bytes, log: tuple, no_timer=False):
         udp_sock.sendto(message, ECHO_SERVER)
         logging.info("Send; {}; {}; {}".format(*log))
-        Sent.append(Timer(0.8, Tools.timeout, (message, log)))
-        Sent[-1].daemon = True
-        Sent[-1].start()
+        if not no_timer:
+            Sent.append(Timer(0.8, Tools.timeout, (message, log)))
+            Sent[-1].daemon = True
+            Sent[-1].start()
 
     def good_packet(packet: bytes):
         empty_pos = packet.find(b"\n\n")
@@ -73,7 +74,7 @@ class Tools:
     def recv():
         temp = udp_sock.recv(MAX_PAYLOAD_SIZE * 4) # extra 1024 byte just in case
         if Tools.good_packet(temp):
-            if 0 and temp.count(DAT.encode()) > 1: #TODO: to be written
+            if temp.count(DAT.encode()) > 1: #TODO: to be written
                 print("multi data")
                 packets = Tools.handle_pipe(temp)
                 for p in packets:
@@ -93,11 +94,9 @@ class Tools:
 
     def handle_pipe(message):
         results = []
-        #clean_match = re.findall(Tools.PATTERN_BYTE, message, re.MULTILINE)
-        #clean_match = [[i[0].decode(), i[1].decode()] for i in clean_match]
         matches = re.finditer(Tools.PATTERN_BYTE, message)
         last = 0
-        for i, match in enumerate(matches):
+        for match in matches:
             payload = message[last:match.start()]
             last = match.end()
             Recieved.add(match.group()+payload)
@@ -145,8 +144,14 @@ class Tools:
                 break
 
     def timeout(message, log):
+        #if message not in Recieved:
+        #    Tools.send(message, log)
         if message not in Recieved:
-            Tools.send(message, log)
+            if DAT == Tools.packet_splitter(message)[0]:
+                pass
+            else:
+                Tools.send(message, log)
+
 
 
 
@@ -164,6 +169,8 @@ class Sender:
         self.reciver_window = 0
         self.on_air = {i:0 for i in self.file}
         self.send_syn() # make connection as soon as object is initialized
+        self.counter = 0
+        self.timer = None
 
     def send_syn(self):
         h1 = f"Sequence: {self.sequence}"
@@ -183,22 +190,37 @@ class Sender:
         self.reciver_window = headers["window"]
         self.acked = self.sequence = headers["acknowledgment"]
         self.state = self.fin_state and CLOSED or OPEN
+        if self.state == CLOSED and self.fin_state:
+            exit()
 
     def send_data(self):
-        if self.sequence != self.acked:
-            # if Tools.timeout(self.on_air[self.acked]):
-            #    self.sequence = self.acked
-            # else:
+        if self.sequence != self.acked or self.reciver_window == 0:
+            self.counter+=1
+            if Sender is None:
+                self.timer = time()
+            elif self.timer is not None and time() - self.timer >= 1:
+                self.timer = None
+                self.sequence = self.acked
+            if self.counter == 3:
+                self.counter = 0
+                self.sequence = self.acked
+            '''checked = {}
+                if Tools.timeout(s, t):
+                    self.sequence = self.acked
+                    checked.add(s)
+                else:
+                    return
+            Sent -= checked'''
             return
-        for _ in range(1): #TODO: fix this to send 3
+        for _ in range(3): #TODO: fix this to send 3
             chunk = self.file.get(self.sequence)
             if chunk:
                 h1 = f"Sequence: {self.sequence}"
                 h2 = f"Length: {len(chunk)}"
                 packet = PACKET.format(comm=DAT, h1=h1, h2=h2).encode()
                 packet += chunk
-                Tools.send(packet, ("DAT", h1, h2))
-                self.on_air[self.sequence] = time()
+                Tools.send(packet, ("DAT", h1, h2), no_timer=True)
+                #self.on_air[self.sequence] = time()
                 self.sequence += len(chunk)
             else:
                 self.send_fin()
@@ -210,6 +232,7 @@ class Sender:
         packet = PACKET.format(comm=FIN, h1=h1, h2=h2).encode()
         Tools.send(packet, ("FIN", h1, h2))
         # TODO: find a way to put this at Finished first
+        self.file.clear()
         self.state = CLOSED
         self.fin_state = True
 
@@ -227,7 +250,7 @@ class Reciver:
         self.rcv_buff: dict = {}
         self.state = CLOSED
         self.ack_number = 0
-        self.window = 2048
+        self.window = MAX_PAYLOAD_SIZE * 4
     
     def send_ack(self):
         self.ack_number += (not (self.state == OPEN))
@@ -242,11 +265,12 @@ class Reciver:
         if headers["sequence"] != self.ack_number:
             self.send_ack()
             return
-        #if headers["sequence"] in self.rcv_buff:
-        #    return
+        elif headers["sequence"] in self.rcv_buff:
+            return
         else:
             self.rcv_buff[headers["sequence"]] = message[PAYLOAD]
-            self.ack_number += headers["length"] # send_ack will add 1 
+            self.ack_number += headers["length"] # send_ack will add 1
+            self.window -= headers["length"]
             #self.send_ack()
 
     def write_file(self):
@@ -290,7 +314,7 @@ while True:
                 jobs.put(rdp_receiver.send_ack)
             elif message[COMMAND] == DAT:
                 if len(message) == 2:
-                    for packet in message[1]:
+                    for packet in sorted(message[1], key=lambda x:x[HEADER]):
                         rdp_receiver.rcv_data(packet)
                         jobs.put(rdp_receiver.send_ack)
                 else:
@@ -307,8 +331,11 @@ while True:
 
     if udp_sock in writable:
         Tools.get_next_job()
+        rdp_receiver.window = MAX_PAYLOAD_SIZE*4
         if rdp_receiver.state == OPEN and rdp_sender.state == OPEN:
             rdp_sender.send_data()
+        elif rdp_receiver == CLOSED and rdp_sender == CLOSED:
+            break
 
     if udp_sock not in readable and udp_sock not in writable:
         if rdp_sender.getstate() == CLOSED and rdp_receiver.getstate() == CLOSED:
