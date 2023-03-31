@@ -47,6 +47,14 @@ server.bind(server_address) # Bind the socket to the port
 connected_clients = {} #address:Client
 message_queues = {} # Outgoing message queues (socket:Queue)
 
+
+def reformat(data: bytes) -> bytes:
+    splited = data.split(b"\n\n")
+    if len(splited) > 1:
+        return struct.pack(STRUCT_FMT, splited[0]) + b"\n\n".join(splited[1:])
+    else:
+        return struct.pack(STRUCT_FMT, splited[0])
+
 class Client:
     def __init__(self, ip_port: tuple) -> None:
         self.ip_port = ip_port
@@ -67,6 +75,13 @@ class Client:
         sock.sendto(packet, self.ip_port)
         self.seq_num += 1
         self.exp_ack_num += 1
+
+    def send_rst(self):
+        self.last_received = time.time() # if sending rst, it means we have reveived a bad message
+        packet = struct.pack('!3sI', b"RST", self.seq_num)
+        sock.sendto(packet, self.ip_port)
+        self.seq_num = 0
+        self.exp_ack_num = 0
     
     def send_fin(self) -> None:
         self.last_received = time.time() # if sending fin, it means we have reveived a fin
@@ -158,9 +173,10 @@ def state_decider(client: Client, data: bytes) -> None:
     if client.state == CLOSED:
         print("clinet state: ", client.state, "rdp_seg: ", data_seg[RDP_SEGMENT])
         if b"SYN" in data_seg[RDP_SEGMENT][RDP_COMMAND]:
+            print("recived SYN")
             client.state = SYNC_RCV
-        else:
-            raise ValueError("Invalid state")
+        elif b"ACk" in data_seg[RDP_SEGMENT][RDP_COMMAND]:
+            message_queues[client].put(client.send_fin)
 
     if client.state == SYNC_RCV:
         print("clinet state: ", client.state, "rdp_seg: ", data_seg[RDP_SEGMENT])
@@ -186,6 +202,9 @@ def state_decider(client: Client, data: bytes) -> None:
             message_queues[client].put(client.send_data)
             message_queues[client].put((client.recieve_ack, data_seg[RDP_SEGMENT]))
             #input()
+        elif b"SYN" in data_seg[RDP_SEGMENT][RDP_COMMAND]:
+            client.state = CLOSED
+            message_queues[client].put(client.send_rst)
     if client.state == FIN_SENT:
         print("clinet state: ", client.state, "rdp_seg: ", data_seg[RDP_SEGMENT])
         if b"ACK" in data_seg[RDP_SEGMENT][RDP_COMMAND] or client.timeout():
@@ -193,11 +212,13 @@ def state_decider(client: Client, data: bytes) -> None:
     
     if client.state == CON_FIN_RCVD:
         print("clinet state: ", client.state, "rdp_seg: ", data_seg[RDP_SEGMENT])
-        client.send_fin()
+        message_queues[client].put(client.send_fin)
         client.state = FIN_SENT
 
     if client.state == FIN_RCV:
         print("clinet state: ", client.state, "rdp_seg: ", data_seg[RDP_SEGMENT])
+        message_queues[client].put(client.send_fin)
+        client.state = FIN_SENT
         pass
     
 
@@ -213,7 +234,6 @@ while True:
             connected_clients[address]= new_client
             message_queues[new_client] = queue.Queue()
 
-        
         state_decider(connected_clients[address], data)
             
 
