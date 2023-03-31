@@ -56,7 +56,6 @@ class Tools:
     PATTERN = re.compile(r"(SYN|DAT|FIN|ACK|RST)\n(([a-zA-Z]+: [-1|\d]+\n)*)\n")
     PATTERN_BYTE = re.compile(r"(SYN|DAT|FIN|ACK|RST)\n(([a-zA-Z]+: [-1|\d]+\n)*)\n".encode(), re.MULTILINE)
 
-
     def send(message: bytes, log: tuple):
         udp_sock.sendto(message, ECHO_SERVER)
         logging.info("Send; {}; {}; {}".format(*log))
@@ -64,13 +63,12 @@ class Tools:
         Sent[-1].daemon = True
         Sent[-1].start()
 
-
     def good_packet(packet: bytes):
         empty_pos = packet.find(b"\n\n")
         if empty_pos != -1:
             packet = packet[:empty_pos+2].decode()
             return Tools.PATTERN.fullmatch(packet)
-
+    
     def recv():
         temp = udp_sock.recv(MAX_PAYLOAD_SIZE * 4) # extra 1024 byte just in case
         command, headers, payload = "", [], ""

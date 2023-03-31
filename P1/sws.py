@@ -97,7 +97,7 @@ server_ip = sys.argv[1]
 serverPort = int(sys.argv[2])
 # Create a TCP/IP socket
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-server.setblocking(0)
+server.setblocking(False)
 # Bind the socket to the port
 server_address = (server_ip, serverPort)
 server.bind(server_address)
@@ -158,10 +158,10 @@ while inputs:
                 m = [i+"\n\n" for i in PATTERN_SPLIT.split(message) if i]
                 if len(m) > 1:
                     for i in m:
-                        response: str = generate_response(i)
+                        response: tuple = generate_response(i)
                         message_queues[s].put(response)
                 else:
-                    response: str = generate_response(message)
+                    response: tuple = generate_response(message)
                     message_queues[s].put(response)
                 request_message[s] = "" # massage fuly retrived, clear the buffer
                 # add the socket s to the output list for watching writability
