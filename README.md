@@ -1,5 +1,7 @@
 # Python-HTTP-server
 
+Implemented as part of CSC361 course at UVic
+  
 **P1) HTTP Client**: Supports multiple clients and conccurrent connections, only Connection Header is supperted.
 posssible response codes: 200, 400, 404
 
